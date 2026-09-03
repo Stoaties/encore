@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: encore-test-pg
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: musicapp
+      POSTGRES_PASSWORD: musicapp
+      POSTGRES_DB: musicapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  jellyfin:
+    image: jellyfin/jellyfin:10.11.11
+    container_name: encore-test-jf
+    user: "1000:1000"
+    ports:
+      - "8096:8096"
+    volumes:
+      - ./jf-config:/config
+      - ./jf-cache:/cache
+      - ./library:/music
+
+volumes:
+  pgdata:

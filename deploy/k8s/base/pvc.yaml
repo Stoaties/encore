@@ -1,0 +1,25 @@
+# Both claims usually point at NAS-backed storage (e.g. an nfs CSI storage class
+# or statically provisioned PVs). If Jellyfin/slskd already own suitable PVCs in
+# this namespace, drop these resources in your overlay and reference the existing
+# claim names in the deployment instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: encore-media
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slskd-downloads
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi

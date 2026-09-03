@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encore
+spec:
+  # the acquisition worker claims jobs in-process; run exactly one replica
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: encore
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: encore
+    spec:
+      securityContext:
+        # must match the uid/gid that owns the music share (Jellyfin needs to read what Encore writes)
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: encore
+          image: ghcr.io/you/encore:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: encore-config
+            - secretRef:
+                name: encore-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: media
+              mountPath: /data
+            - name: slskd-downloads
+              mountPath: /slskd-downloads
+      volumes:
+        # NAS share that also backs the Jellyfin music library
+        - name: media
+          persistentVolumeClaim:
+            claimName: encore-media
+        # slskd's completed-downloads directory (Encore moves finished files out of it)
+        - name: slskd-downloads
+          persistentVolumeClaim:
+            claimName: slskd-downloads

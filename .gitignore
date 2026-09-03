@@ -1,0 +1,24 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+
+# local test stack state
+test-stack/jf-config/
+test-stack/jf-cache/
+test-stack/library/
+test-stack/staging/
+test-stack/slskd-files/
+
+# deployment secrets (keep the .example)
+deploy/k8s/**/encore-secrets.env
+
+# capacitor / android build outputs
+web/android/app/build/
+web/android/build/
+web/android/.gradle/
+web/android/local.properties
+web/android/app/release/
+*.keystore

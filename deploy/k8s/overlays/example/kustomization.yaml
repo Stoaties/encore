@@ -1,0 +1,41 @@
+# Copy this overlay, point ArgoCD at your copy, and adjust for your cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: encore
+
+resources:
+  - ../../base
+
+images:
+  # Prebuilt upstream image. Swap `newName` for your fork if you build your own.
+  - name: ghcr.io/you/encore
+    newName: ghcr.io/stoaties/encore
+    newTag: v0.3.1
+
+# For real deployments prefer sealed-secrets/external-secrets/SOPS over a
+# generator: ArgoCD would need the plaintext env file committed to the repo.
+secretGenerator:
+  - name: encore-secrets
+    envs:
+      - encore-secrets.env
+generatorOptions:
+  disableNameSuffixHash: true
+
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: encore.example.com
+    target:
+      kind: Ingress
+      name: encore
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: encore-config
+      data:
+        JELLYFIN_URL: "http://jellyfin.media.svc.cluster.local:8096"
+        JELLYFIN_PUBLIC_URL: "https://jellyfin.example.com"
+        SLSKD_URL: "http://slskd.media.svc.cluster.local:5030"

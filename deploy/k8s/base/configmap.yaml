@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: encore-config
+data:
+  # internal URL the backend uses to call Jellyfin
+  JELLYFIN_URL: "http://jellyfin.media.svc.cluster.local:8096"
+  # URL clients can reach Jellyfin at (audio streams directly from here)
+  JELLYFIN_PUBLIC_URL: "https://jellyfin.example.com"
+  SLSKD_URL: "http://slskd.media.svc.cluster.local:5030"
+  MUSIC_LIBRARY_PATH: "/data/music"
+  # keep staging on the same volume as the library so finished albums move in atomically
+  STAGING_PATH: "/data/encore-staging"
+  # where slskd writes completed downloads, as seen from this pod
+  SLSKD_DOWNLOADS_PATH: "/slskd-downloads"
+  MUSICBRAINZ_USER_AGENT: "Encore/0.1.0 (https://github.com/you/encore)"
+  PORT: "8080"
