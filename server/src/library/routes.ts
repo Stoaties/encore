@@ -112,7 +112,19 @@ export function libraryRoutes(deps: AppDeps) {
           Fields: ITEM_FIELDS,
         }),
       ]);
-      return { album: toAlbumSummary(album), tracks: tracks.Items.map(toTrackSummary) };
+      const albumSummary = toAlbumSummary(album);
+      // Propagate the album's release-group id onto tracks that lack their own
+      // ProviderIds — the right-click Refetch on a track falls back to the
+      // album's request, so a poorly-tagged track still lights up the menu
+      // as long as the album itself is Encore-tracked.
+      const trackList = tracks.Items.map((it) => {
+        const t = toTrackSummary(it);
+        if (!t.mbReleaseGroupId && albumSummary.mbReleaseGroupId) {
+          t.mbReleaseGroupId = albumSummary.mbReleaseGroupId;
+        }
+        return t;
+      });
+      return { album: albumSummary, tracks: trackList };
     });
 
     app.get('/tracks/:id', async (req) => {

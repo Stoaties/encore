@@ -4,7 +4,7 @@
  * bundled copy to detect that a newer server has been deployed and the
  * installed APK is stale.
  */
-export const APP_VERSION = '0.3.4';
+export const APP_VERSION = '0.3.5';
 
 // ---------- auth ----------
 export interface LoginRequest {
@@ -66,6 +66,8 @@ export interface TrackSummary {
   playlistEntryId?: string | null;
   /** MusicBrainz recording id from Jellyfin's ProviderIds — used to match against Encore requests for refetch */
   mbRecordingId?: string | null;
+  /** MusicBrainz release-group id from Jellyfin's ProviderIds — lets a track fall back to its parent album's request for refetch */
+  mbReleaseGroupId?: string | null;
 }
 export interface ArtistDetail {
   artist: ArtistSummary;

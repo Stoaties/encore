@@ -17,19 +17,44 @@ interface Props {
   onRemove?: (track: TrackSummary, index: number) => void;
 }
 
+/** Look up an available request that can be refetched for this track — direct
+ *  by recording id, or the parent album's request as fallback (which will
+ *  re-acquire the whole album). Returns null when nothing matches. */
+function refetchTargetFor(
+  t: TrackSummary,
+  trackReqs: Map<string, { id: string }>,
+  albumReqs: Map<string, { id: string }>,
+): { requestId: string; scope: 'track' | 'album' } | null {
+  if (t.mbRecordingId) {
+    const r = trackReqs.get(t.mbRecordingId);
+    if (r) return { requestId: r.id, scope: 'track' };
+  }
+  if (t.mbReleaseGroupId) {
+    const r = albumReqs.get(t.mbReleaseGroupId);
+    if (r) return { requestId: r.id, scope: 'album' };
+  }
+  return null;
+}
+
 export function TrackList({ tracks, showNumbers = false, showCovers = true, showAlbum = true, onRemove }: Props) {
   const playing = usePlayer((s) => s.isPlaying);
   const current = usePlayer((s) => currentTrack(s));
-  const { tracks: refetchable } = useRefetchableRequests();
+  const { tracks: trackReqs, albums: albumReqs } = useRefetchableRequests();
   const action = useRequestAction();
   const openMenu = useContextMenu((s) => s.openMenu);
 
-  const onRefetch = (t: TrackSummary, requestId: string) => {
-    if (!window.confirm(`Wrong version? This will delete "${t.name}" and grab a different source from Soulseek.`)) return;
-    action.mutate({ id: requestId, action: 'refetch' });
+  const onRefetch = (t: TrackSummary, target: { requestId: string; scope: 'track' | 'album' }) => {
+    const what = target.scope === 'album' ? `album "${t.album ?? t.name}"` : `"${t.name}"`;
+    if (!window.confirm(`Wrong version? This will delete ${what} and grab a different source from Soulseek.`)) return;
+    action.mutate({ id: target.requestId, action: 'refetch' });
   };
 
-  const openTrackMenu = (e: React.MouseEvent, t: TrackSummary, i: number, requestId: string | undefined) => {
+  const openTrackMenu = (
+    e: React.MouseEvent,
+    t: TrackSummary,
+    i: number,
+    target: ReturnType<typeof refetchTargetFor>,
+  ) => {
     e.preventDefault();
     const items: ContextMenuItem[] = [
       { label: 'Play', icon: Play, onClick: () => playQueue(tracks, i) },
@@ -37,8 +62,13 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
     if (onRemove) {
       items.push({ label: 'Remove from playlist', icon: X, onClick: () => onRemove(t, i), danger: true });
     }
-    if (requestId) {
-      items.push({ label: 'Refetch', icon: RefreshCw, onClick: () => onRefetch(t, requestId), danger: true });
+    if (target) {
+      items.push({
+        label: target.scope === 'album' ? 'Refetch album' : 'Refetch',
+        icon: RefreshCw,
+        danger: true,
+        onClick: () => onRefetch(t, target),
+      });
     }
     openMenu(e.clientX, e.clientY, items);
   };
@@ -47,11 +77,11 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
     <div className="flex flex-col">
       {tracks.map((t, i) => {
         const isCurrent = current?.id === t.id;
-        const refetchReq = t.mbRecordingId ? refetchable.get(t.mbRecordingId) : undefined;
+        const target = refetchTargetFor(t, trackReqs, albumReqs);
         return (
           <div
             key={`${t.id}-${i}`}
-            onContextMenu={(e) => openTrackMenu(e, t, i, refetchReq?.id)}
+            onContextMenu={(e) => openTrackMenu(e, t, i, target)}
             className={`group flex w-full items-center gap-1 rounded-md pl-3 pr-2 hover:bg-panel-hover ${
               isCurrent ? 'text-accent' : ''
             }`}
@@ -83,13 +113,13 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
             </button>
             <HeartButton itemId={t.id} />
             <AddToPlaylistButton itemIds={[t.id]} className="invisible group-hover:visible group-focus-within:visible" />
-            {refetchReq && (
+            {target && (
               <button
-                onClick={() => onRefetch(t, refetchReq.id)}
+                onClick={() => onRefetch(t, target)}
                 disabled={action.isPending}
                 className="invisible rounded p-1.5 text-zinc-500 hover:text-white group-hover:visible group-focus-within:visible disabled:opacity-40"
                 aria-label={`Refetch ${t.name}`}
-                title="Wrong version? Delete and grab a different source"
+                title={target.scope === 'album' ? 'Wrong version? Refetch the whole album' : 'Wrong version? Delete and grab a different source'}
               >
                 <RefreshCw className="size-4" />
               </button>

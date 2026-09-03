@@ -43,6 +43,7 @@ export function toTrackSummary(i: JfItem): TrackSummary {
     isFavorite: i.UserData?.IsFavorite ?? false,
     playlistEntryId: i.PlaylistItemId ?? null,
     mbRecordingId: i.ProviderIds?.MusicBrainzTrack ?? null,
+    mbReleaseGroupId: i.ProviderIds?.MusicBrainzReleaseGroup ?? null,
   };
 }
 
