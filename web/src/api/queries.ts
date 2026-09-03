@@ -292,15 +292,17 @@ export const useCreateImport = () => {
   });
 };
 
-export const useConfirmImport = () => {
+/** Request a single missing item from an import — fires the normal Encore
+ *  request pipeline so it shows up in the Requests tab. */
+export const useRequestImportItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, items }: { id: string; items: { id: string; status: 'confirmed' | 'rejected' }[] }) =>
-      api<ImportBatch>(`/api/imports/${id}/confirm`, { method: 'POST', body: { items } }),
+    mutationFn: ({ batchId, itemId }: { batchId: string; itemId: string }) =>
+      api<ImportBatch>(`/api/imports/${batchId}/items/${itemId}/request`, { method: 'POST' }),
     onSuccess: (data) => qc.setQueryData(['import', data.id], data),
     onSettled: (_d, _e, v) => {
       void qc.invalidateQueries({ queryKey: ['imports'] });
-      void qc.invalidateQueries({ queryKey: ['import', v.id] });
+      void qc.invalidateQueries({ queryKey: ['import', v.batchId] });
       void qc.invalidateQueries({ queryKey: ['requests'] });
     },
   });

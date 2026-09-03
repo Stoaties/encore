@@ -146,6 +146,9 @@ export const importBatches = pgTable('import_batches', {
   title: text('title'),
   status: importStatusEnum('status').notNull().default('resolving'),
   error: text('error'),
+  coverUrl: text('cover_url'),
+  jellyfinPlaylistId: text('jellyfin_playlist_id'),
+  truncated: boolean('truncated').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

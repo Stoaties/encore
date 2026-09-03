@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { ImportBatch, ServerEvent } from '@encore/shared';
 import { schema } from '../src/db/index.js';
@@ -10,14 +10,22 @@ import { bearer, buildTestApp, fakeFetch, json, seedUser, setupTestDb, testConfi
 // ---------- pure units ----------
 
 describe('parsePlaylistUrl', () => {
-  it('parses spotify playlist links (incl. intl prefixes)', () => {
+  it('parses spotify playlist/album/track links (incl. intl prefixes)', () => {
     expect(parsePlaylistUrl('https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x')).toEqual({
       source: 'spotify',
-      id: '37i9dQZF1DXcBWIGoYBM5M',
+      id: 'playlist:37i9dQZF1DXcBWIGoYBM5M',
     });
     expect(parsePlaylistUrl('https://open.spotify.com/intl-fr/playlist/AbC123')).toEqual({
       source: 'spotify',
-      id: 'AbC123',
+      id: 'playlist:AbC123',
+    });
+    expect(parsePlaylistUrl('https://open.spotify.com/album/AlbID')).toEqual({
+      source: 'spotify',
+      id: 'album:AlbID',
+    });
+    expect(parsePlaylistUrl('https://open.spotify.com/track/TrkID')).toEqual({
+      source: 'spotify',
+      id: 'track:TrkID',
     });
   });
 
@@ -28,7 +36,6 @@ describe('parsePlaylistUrl', () => {
   });
 
   it('rejects everything else', () => {
-    expect(parsePlaylistUrl('https://open.spotify.com/track/xyz')).toBeNull();
     expect(parsePlaylistUrl('https://example.com/playlist/1')).toBeNull();
     expect(parsePlaylistUrl('not a url')).toBeNull();
   });
@@ -84,7 +91,7 @@ describe('matching', () => {
   });
 });
 
-// ---------- integration: create → resolve → confirm ----------
+// ---------- integration: create → resolve (auto-done) ----------
 
 const KREC = 'dddddddd-0000-4000-8000-000000000001';
 const NREC = 'dddddddd-0000-4000-8000-000000000002';
@@ -111,17 +118,33 @@ const mbFetch = fakeFetch((url) => {
   return undefined;
 });
 
-// spotdl-web /api/enumerate returns a flat {title, tracks[]} — Encore's provider
-// now shells out to that instead of hitting the Spotify Web API directly.
+/** Mock the Spotify embed page: return the tracks embedded in the __NEXT_DATA__
+ *  script blob just like open.spotify.com/embed/playlist/{id} does in production. */
+const spotifyEmbedHtml = (title: string, tracks: { title: string; subtitle: string; duration: number | null }[]) => {
+  const entity = {
+    type: 'playlist',
+    name: title,
+    coverArt: { sources: [{ url: 'https://i.scdn.co/image/mock-cover-640', width: 640 }] },
+    trackList: tracks.map((t) => ({ title: t.title, subtitle: t.subtitle, duration: t.duration })),
+  };
+  const blob = { props: { pageProps: { state: { data: { entity } } } } };
+  return `<html><head><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(blob)}</script></head><body></body></html>`;
+};
+
 const spotifyFetch = fakeFetch((url) => {
-  if (url.pathname === '/api/enumerate') {
-    return json({
-      title: 'Road Trip',
-      tracks: [
-        { title: 'Karma Police', artist: 'Radiohead', album: 'OK Computer', durationMs: 261_000 },
-        { title: 'No Surprises', artist: 'Radiohead', album: null, durationMs: 226_000 },
-        { title: 'Obscure B-Side', artist: 'Nobody', album: null, durationMs: null },
-      ],
+  if (url.hostname === 'open.spotify.com' && url.pathname.startsWith('/embed/playlist/')) {
+    const html = spotifyEmbedHtml('Road Trip', [
+      { title: 'Karma Police', subtitle: 'Radiohead', duration: 261_000 },
+      { title: 'No Surprises', subtitle: 'Radiohead', duration: 226_000 },
+      { title: 'Obscure B-Side', subtitle: 'Nobody', duration: null },
+    ]);
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+  }
+  // ignore cover-image fetches — resolve returns empty bytes so uploadPrimaryImage no-ops
+  if (url.hostname === 'i.scdn.co') {
+    return new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+      status: 200,
+      headers: { 'content-type': 'image/jpeg' },
     });
   }
   return undefined;
@@ -144,6 +167,9 @@ describe('import flow', () => {
   async function setup() {
     const user = await seedUser(db);
     const t = await buildTestApp(db, { mbFetch });
+    // Stub Jellyfin so resolve doesn't try to hit a real server for playlist create
+    vi.spyOn(t.jellyfin, 'items').mockResolvedValue({ Items: [], TotalRecordCount: 0, StartIndex: 0 });
+    vi.spyOn(t.jellyfin, 'createPlaylist').mockResolvedValue({ Id: 'jf-playlist-1' });
     const ctx: ImportCtx = {
       db,
       config: testConfig(),
@@ -172,8 +198,6 @@ describe('import flow', () => {
     const bad = await app.inject({ method: 'POST', url: '/api/imports', headers: auth, payload: { url: 'https://example.com/x' } });
     expect(bad.statusCode).toBe(400);
 
-    // YouTube still needs a Data API v3 key (Spotify goes through spotdl-web now
-    // and needs no config, so its missing-creds path is gone)
     const noYt = await buildTestApp(db, { mbFetch });
     const res = await noYt.app.inject({
       method: 'POST',
@@ -185,7 +209,7 @@ describe('import flow', () => {
     expect(res.json().error).toMatch(/not configured/);
   });
 
-  it('resolves the playlist into matched items and reaches review', async () => {
+  it('resolves the playlist, matches items, and lands in "done" with cover + jellyfinPlaylistId', async () => {
     const { app, auth, ctx, events } = await setup();
     const seen: ServerEvent[] = [];
     events.subscribe((e) => {
@@ -199,65 +223,22 @@ describe('import flow', () => {
 
     const res = await app.inject({ method: 'GET', url: `/api/imports/${created.id}`, headers: auth });
     const batch = res.json() as ImportBatch;
-    expect(batch.status).toBe('review');
+    expect(batch.status).toBe('done');
     expect(batch.title).toBe('Road Trip');
-    expect(batch.items).toHaveLength(3); // null + episode entries dropped
+    expect(batch.coverUrl).toBe('https://i.scdn.co/image/mock-cover-640');
+    expect(batch.items).toHaveLength(3);
 
     const [karma, surprises, obscure] = batch.items;
-    expect(karma).toMatchObject({ sourceTitle: 'Karma Police', matchStatus: 'auto', matchMbRecordingId: KREC });
+    expect(karma).toMatchObject({ sourceTitle: 'Karma Police', matchMbRecordingId: KREC });
     expect(karma!.matchScore).toBeGreaterThan(0.95);
-    expect(surprises).toMatchObject({ sourceTitle: 'No Surprises', matchStatus: 'needs_review', matchMbRecordingId: NREC });
+    expect(surprises).toMatchObject({ sourceTitle: 'No Surprises', matchMbRecordingId: NREC });
     expect(obscure).toMatchObject({ sourceTitle: 'Obscure B-Side', matchStatus: 'unmatched', matchMbRecordingId: null });
 
-    expect(seen.some((e) => e.kind === 'import-updated' && e.status === 'resolving')).toBe(true);
-    expect(seen.at(-1)).toMatchObject({ kind: 'import-updated', batchId: created.id, status: 'review' });
+    expect(seen.at(-1)).toMatchObject({ kind: 'import-updated', batchId: created.id, status: 'done' });
   });
 
-  it('confirm requests auto matches, honors decisions, and tolerates duplicates', async () => {
+  it('POST /items/:itemId/request creates an Encore track request for a missing item', async () => {
     const { app, auth, ctx, user } = await setup();
-    const created = (
-      await app.inject({ method: 'POST', url: '/api/imports', headers: auth, payload: { url: PLAYLIST_URL } })
-    ).json() as ImportBatch;
-    await resolveImportBatch(ctx, created.id, async () => {});
-    const items = ((await app.inject({ method: 'GET', url: `/api/imports/${created.id}`, headers: auth })).json() as ImportBatch).items;
-    const surprises = items.find((i) => i.sourceTitle === 'No Surprises')!;
-
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/imports/${created.id}/confirm`,
-      headers: auth,
-      payload: { items: [{ id: surprises.id, status: 'confirmed' }] },
-    });
-    expect(res.statusCode).toBe(200);
-    const done = res.json() as ImportBatch;
-    expect(done.status).toBe('done');
-    const karma = done.items.find((i) => i.sourceTitle === 'Karma Police')!;
-    expect(karma.matchStatus).toBe('confirmed');
-    expect(karma.requestId).toBeTruthy();
-    expect(done.items.find((i) => i.sourceTitle === 'No Surprises')!.requestId).toBeTruthy();
-    expect(done.items.find((i) => i.sourceTitle === 'Obscure B-Side')!.requestId).toBeNull();
-
-    const reqs = await db.query.requests.findMany({ where: eq(schema.requests.requestedBy, user.id) });
-    expect(reqs).toHaveLength(2);
-    expect(reqs.every((r) => r.type === 'track')).toBe(true);
-
-    // a second import of the same playlist hits duplicate 409s — still succeeds, without new requests
-    const again = (
-      await app.inject({ method: 'POST', url: '/api/imports', headers: auth, payload: { url: PLAYLIST_URL } })
-    ).json() as ImportBatch;
-    await resolveImportBatch(ctx, again.id, async () => {});
-    const res2 = await app.inject({ method: 'POST', url: `/api/imports/${again.id}/confirm`, headers: auth, payload: {} });
-    expect(res2.statusCode).toBe(200);
-    const done2 = res2.json() as ImportBatch;
-    expect(done2.status).toBe('done');
-    const karma2 = done2.items.find((i) => i.sourceTitle === 'Karma Police')!;
-    expect(karma2.matchStatus).toBe('confirmed');
-    expect(karma2.requestId).toBeNull(); // already requested — no duplicate row
-    expect(await db.query.requests.findMany({ where: eq(schema.requests.requestedBy, user.id) })).toHaveLength(2);
-  });
-
-  it('marks rejected decisions and skips them', async () => {
-    const { app, auth, ctx } = await setup();
     const created = (
       await app.inject({ method: 'POST', url: '/api/imports', headers: auth, payload: { url: PLAYLIST_URL } })
     ).json() as ImportBatch;
@@ -267,16 +248,21 @@ describe('import flow', () => {
 
     const res = await app.inject({
       method: 'POST',
-      url: `/api/imports/${created.id}/confirm`,
+      url: `/api/imports/${created.id}/items/${karma.id}/request`,
       headers: auth,
-      payload: { items: [{ id: karma.id, status: 'rejected' }] },
     });
-    const done = res.json() as ImportBatch;
-    expect(done.items.find((i) => i.sourceTitle === 'Karma Police')!.matchStatus).toBe('rejected');
-    expect(done.items.every((i) => !i.requestId)).toBe(true);
+    expect(res.statusCode).toBe(200);
+    const updated = res.json() as ImportBatch;
+    const updatedKarma = updated.items.find((i) => i.sourceTitle === 'Karma Police')!;
+    expect(updatedKarma.requestId).toBeTruthy();
+
+    const reqs = await db.query.requests.findMany({ where: eq(schema.requests.requestedBy, user.id) });
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0]!.type).toBe('track');
+    expect(reqs[0]!.mbRecordingId).toBe(KREC);
   });
 
-  it('other users cannot see or confirm someone else’s batch', async () => {
+  it('other users cannot see or act on someone else’s batch', async () => {
     const { app, auth } = await setup();
     const created = (
       await app.inject({ method: 'POST', url: '/api/imports', headers: auth, payload: { url: PLAYLIST_URL } })

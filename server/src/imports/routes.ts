@@ -4,11 +4,11 @@ import type { ImportBatch } from '@encore/shared';
 import type { AppDeps } from '../app.js';
 import { jfContext } from '../auth/session.js';
 import {
-  confirmImportBatch,
   createImportBatch,
   deleteImportBatch,
   getImportBatch,
   listImportBatches,
+  requestImportItem,
 } from './service.js';
 
 export function importRoutes(deps: AppDeps) {
@@ -32,17 +32,14 @@ export function importRoutes(deps: AppDeps) {
       return getImportBatch(deps, user, id);
     });
 
-    app.post('/:id/confirm', async (req): Promise<ImportBatch> => {
-      const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-      const { items } = z
-        .object({
-          items: z
-            .array(z.object({ id: z.string().uuid(), status: z.enum(['confirmed', 'rejected']) }))
-            .default([]),
-        })
-        .parse(req.body ?? {});
+    // Request a single missing item — creates a track request through the
+    // normal Encore pipeline (visible in the Requests tab).
+    app.post('/:id/items/:itemId/request', async (req): Promise<ImportBatch> => {
+      const { id, itemId } = z
+        .object({ id: z.string().uuid(), itemId: z.string().uuid() })
+        .parse(req.params);
       const { user } = await jfContext(deps.db, req.user.sub);
-      return confirmImportBatch(deps, user, id, items);
+      return requestImportItem(deps, user, id, itemId);
     });
 
     app.delete('/:id', async (req): Promise<{ ok: true }> => {

@@ -4,7 +4,7 @@
  * bundled copy to detect that a newer server has been deployed and the
  * installed APK is stale.
  */
-export const APP_VERSION = '0.3.5';
+export const APP_VERSION = '0.4.0';
 
 // ---------- auth ----------
 export interface LoginRequest {
@@ -294,6 +294,9 @@ export interface ReportPlayBody {
 
 // ---------- playlist import ----------
 export type ImportSource = 'spotify' | 'youtube';
+// resolving = fetching source + matching; done = Jellyfin playlist built,
+// missing tracks can be requested inline; failed = something upstream broke.
+// ('review' / 'requesting' are legacy — kept in the enum for older rows.)
 export type ImportStatus = 'resolving' | 'review' | 'requesting' | 'done' | 'failed';
 export type MatchStatus = 'auto' | 'needs_review' | 'confirmed' | 'rejected' | 'unmatched';
 export interface ImportItem {
@@ -321,6 +324,12 @@ export interface ImportBatch {
   error?: string | null;
   items: ImportItem[];
   createdAt: string;
+  /** cover image URL captured from the source (Spotify cdn) — displayed in the Encore view */
+  coverUrl?: string | null;
+  /** Jellyfin playlist id created for the in-library subset, in original order */
+  jellyfinPlaylistId?: string | null;
+  /** true when the source had more tracks than we could fetch (Spotify embed caps at 100) */
+  truncated?: boolean | null;
 }
 
 // ---------- server-sent events ----------

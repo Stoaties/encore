@@ -621,6 +621,12 @@ export class AcquisitionWorker {
     await this.setRequest(req.id, { status: 'available', progress: null, availableAt: new Date(), errorMessage: null });
     await jlog('info', 'Request complete — available in the library');
     if (req.parentId) await this.rollupParent(req.parentId);
+    // Slot this track into any import playlists that requested it — best-effort.
+    if (this.deps.imports) {
+      await this.deps.imports.onRequestAvailable(req.id).catch((err) => {
+        this.deps.log.warn(`onRequestAvailable(${req.id}) failed: ${(err as Error).message}`);
+      });
+    }
   }
 
   private async isIndexed(target: Target): Promise<boolean> {

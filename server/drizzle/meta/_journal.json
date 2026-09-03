@@ -15,6 +15,13 @@
       "when": 1786832624095,
       "tag": "0001_next_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788468000000,
+      "tag": "0002_import_playlist",
+      "breakpoints": true
     }
   ]
 }
