@@ -1,7 +1,10 @@
+import { useRef } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { Disc3, Home, ListMusic, LogOut, Mic2, Search, Download } from 'lucide-react';
+import { APP_VERSION } from '@encore/shared';
 import { useSession } from '../state/session';
 import { useServerEvents } from '../api/sse';
+import { api } from '../api/client';
 import { PlayerBar } from './PlayerBar';
 import { ContextMenu } from './ContextMenu';
 
@@ -14,10 +17,45 @@ const navItems = [
   { to: '/requests', label: 'Requests', icon: Download, end: false },
 ];
 
+// Hidden: five taps on Home within 1.5s opens the update-check prompt. Mainly
+// for the Capacitor Android build where the APK can silently fall behind the
+// deployed server version.
+const TAP_TARGET = 5;
+const TAP_WINDOW_MS = 1500;
+
+async function checkForUpdates() {
+  if (!window.confirm('Check for updates?')) return;
+  try {
+    const { version, apkReleasesUrl } = await api<{ version: string; apkReleasesUrl: string }>('/api/app-version');
+    if (version === APP_VERSION) {
+      window.alert(`You're on the latest version (${APP_VERSION}).`);
+      return;
+    }
+    const msg = `Update available.\n\nApp: ${APP_VERSION}\nServer: ${version}\n\nOpen downloads page?`;
+    if (window.confirm(msg)) window.open(apkReleasesUrl, '_blank');
+  } catch (err) {
+    window.alert(`Could not check for updates: ${(err as Error).message}`);
+  }
+}
+
 export function Layout() {
   const session = useSession((s) => s.session);
   const logout = useSession((s) => s.logout);
   useServerEvents();
+
+  const tapState = useRef({ count: 0, timer: 0 });
+  const onHomeTap = () => {
+    tapState.current.count++;
+    window.clearTimeout(tapState.current.timer);
+    if (tapState.current.count >= TAP_TARGET) {
+      tapState.current.count = 0;
+      void checkForUpdates();
+      return;
+    }
+    tapState.current.timer = window.setTimeout(() => {
+      tapState.current.count = 0;
+    }, TAP_WINDOW_MS);
+  };
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
@@ -34,7 +72,13 @@ export function Layout() {
             <span className="text-lg font-bold tracking-tight">Encore</span>
           </div>
           {navItems.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} className={linkClass}>
+            <NavLink
+              key={n.to}
+              to={n.to}
+              end={n.end}
+              className={linkClass}
+              onClick={n.to === '/' ? onHomeTap : undefined}
+            >
               <n.icon className="size-4" /> {n.label}
             </NavLink>
           ))}
@@ -66,6 +110,7 @@ export function Layout() {
             key={n.to}
             to={n.to}
             end={n.end}
+            onClick={n.to === '/' ? onHomeTap : undefined}
             className={({ isActive }) =>
               `flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] ${
                 isActive ? 'text-accent' : 'text-zinc-400'

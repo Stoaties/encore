@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
+import { APP_VERSION } from '@encore/shared';
 import type { Config } from './config.js';
 import type { Db } from './db/index.js';
 import { JellyfinClient, JellyfinError } from './jellyfin/client.js';
@@ -82,6 +83,12 @@ export async function buildApp(deps: AppDeps) {
   });
 
   app.get('/healthz', async () => ({ status: 'ok' }));
+  // Version probe for the hidden "check for updates" prompt in the mobile app.
+  // apkReleasesUrl is where users can grab a fresh APK when server > app.
+  app.get('/api/app-version', async () => ({
+    version: APP_VERSION,
+    apkReleasesUrl: 'https://github.com/Stoaties/encore/releases',
+  }));
   app.get('/readyz', async (req, reply) => {
     try {
       await deps.db.execute('select 1' as never);

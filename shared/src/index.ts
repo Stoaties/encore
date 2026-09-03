@@ -1,3 +1,11 @@
+/**
+ * Encore build version — bumped per release. The server serves this via
+ * /api/app-version; the Capacitor Android app compares it against its own
+ * bundled copy to detect that a newer server has been deployed and the
+ * installed APK is stale.
+ */
+export const APP_VERSION = '0.3.4';
+
 // ---------- auth ----------
 export interface LoginRequest {
   username: string;
