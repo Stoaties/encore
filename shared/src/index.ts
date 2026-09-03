@@ -36,6 +36,8 @@ export interface AlbumSummary {
   trackCount?: number | null;
   runtimeSec?: number | null;
   isFavorite?: boolean;
+  /** MusicBrainz release-group id from Jellyfin's ProviderIds — used to match against Encore requests for refetch */
+  mbReleaseGroupId?: string | null;
 }
 export interface TrackSummary {
   id: string;
@@ -54,6 +56,8 @@ export interface TrackSummary {
   isFavorite: boolean;
   /** entry id within a playlist (needed to remove the track from it) */
   playlistEntryId?: string | null;
+  /** MusicBrainz recording id from Jellyfin's ProviderIds — used to match against Encore requests for refetch */
+  mbRecordingId?: string | null;
 }
 export interface ArtistDetail {
   artist: ArtistSummary;

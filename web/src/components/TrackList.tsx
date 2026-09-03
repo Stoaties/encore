@@ -1,10 +1,11 @@
-import { Pause, Play, X } from 'lucide-react';
+import { Pause, Play, RefreshCw, X } from 'lucide-react';
 import type { TrackSummary } from '@encore/shared';
 import { playQueue, togglePlay } from '../state/audio';
 import { currentTrack, usePlayer } from '../state/player';
 import { fmtDuration } from '../lib/format';
 import { Cover } from './Cover';
 import { AddToPlaylistButton, HeartButton } from './TrackActions';
+import { useRefetchableRequests, useRequestAction } from '../api/queries';
 
 interface Props {
   tracks: TrackSummary[];
@@ -18,11 +19,19 @@ interface Props {
 export function TrackList({ tracks, showNumbers = false, showCovers = true, showAlbum = true, onRemove }: Props) {
   const playing = usePlayer((s) => s.isPlaying);
   const current = usePlayer((s) => currentTrack(s));
+  const { tracks: refetchable } = useRefetchableRequests();
+  const action = useRequestAction();
+
+  const onRefetch = (t: TrackSummary, requestId: string) => {
+    if (!window.confirm(`Wrong version? This will delete "${t.name}" and grab a different source from Soulseek.`)) return;
+    action.mutate({ id: requestId, action: 'refetch' });
+  };
 
   return (
     <div className="flex flex-col">
       {tracks.map((t, i) => {
         const isCurrent = current?.id === t.id;
+        const refetchReq = t.mbRecordingId ? refetchable.get(t.mbRecordingId) : undefined;
         return (
           <div
             key={`${t.id}-${i}`}
@@ -57,6 +66,17 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
             </button>
             <HeartButton itemId={t.id} />
             <AddToPlaylistButton itemIds={[t.id]} className="invisible group-hover:visible group-focus-within:visible" />
+            {refetchReq && (
+              <button
+                onClick={() => onRefetch(t, refetchReq.id)}
+                disabled={action.isPending}
+                className="invisible rounded p-1.5 text-zinc-500 hover:text-white group-hover:visible group-focus-within:visible disabled:opacity-40"
+                aria-label={`Refetch ${t.name}`}
+                title="Wrong version? Delete and grab a different source"
+              >
+                <RefreshCw className="size-4" />
+              </button>
+            )}
             {onRemove && (
               <button
                 onClick={() => onRemove(t, i)}

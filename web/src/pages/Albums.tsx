@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Play, Shuffle } from 'lucide-react';
-import { useAlbum, useAlbums } from '../api/queries';
+import { Play, RefreshCw, Shuffle } from 'lucide-react';
+import { useAlbum, useAlbums, useRefetchableRequests, useRequestAction } from '../api/queries';
 import { playQueue } from '../state/audio';
 import { AlbumCard, CardGrid } from '../components/Cards';
 import { Cover } from '../components/Cover';
@@ -55,8 +55,16 @@ function shuffled<T>(arr: T[]): T[] {
 export function AlbumPage() {
   const { id } = useParams<{ id: string }>();
   const { data, isLoading } = useAlbum(id);
+  const { albums: refetchable } = useRefetchableRequests();
+  const action = useRequestAction();
   if (isLoading || !data) return <PageSpinner />;
   const { album, tracks } = data;
+  const refetchReq = album.mbReleaseGroupId ? refetchable.get(album.mbReleaseGroupId) : undefined;
+  const onRefetch = () => {
+    if (!refetchReq) return;
+    if (!window.confirm(`Wrong version? This will delete "${album.name}" and grab a different source from Soulseek.`)) return;
+    action.mutate({ id: refetchReq.id, action: 'refetch' });
+  };
   return (
     <div>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end">
@@ -69,7 +77,7 @@ export function AlbumPage() {
             {album.year ? ` · ${album.year}` : ''} · {tracks.length} tracks ·{' '}
             {fmtDuration(tracks.reduce((s, t) => s + t.durationSec, 0))}
           </div>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={() => playQueue(tracks, 0)}
               className="flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-semibold text-black hover:bg-accent-dim"
@@ -83,6 +91,16 @@ export function AlbumPage() {
               <Shuffle className="size-4" /> Shuffle
             </button>
             <SmartShuffleButton tracks={tracks} />
+            {refetchReq && (
+              <button
+                onClick={onRefetch}
+                disabled={action.isPending}
+                className="flex items-center gap-2 rounded-full bg-panel-hover px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+                title="Wrong version? Delete and grab a different source from Soulseek"
+              >
+                <RefreshCw className="size-4" /> Refetch
+              </button>
+            )}
           </div>
         </div>
       </div>

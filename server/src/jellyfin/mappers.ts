@@ -22,6 +22,7 @@ export function toAlbumSummary(i: JfItem): AlbumSummary {
     trackCount: i.ChildCount ?? null,
     runtimeSec: ticksToSec(i.RunTimeTicks) || null,
     isFavorite: i.UserData?.IsFavorite ?? false,
+    mbReleaseGroupId: i.ProviderIds?.MusicBrainzReleaseGroup ?? null,
   };
 }
 
@@ -41,6 +42,7 @@ export function toTrackSummary(i: JfItem): TrackSummary {
     imageTag: i.AlbumPrimaryImageTag ?? i.ImageTags?.Primary ?? null,
     isFavorite: i.UserData?.IsFavorite ?? false,
     playlistEntryId: i.PlaylistItemId ?? null,
+    mbRecordingId: i.ProviderIds?.MusicBrainzTrack ?? null,
   };
 }
 

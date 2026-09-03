@@ -85,6 +85,26 @@ export const useRequests = (scope: 'mine' | 'all') =>
     queryFn: () => api<MusicRequest[]>(`/api/requests?scope=${scope}`),
   });
 
+/**
+ * Maps of MB id → request id for available (in-library) non-artist requests.
+ * Powers the refetch button on Album/Track views — items with no matching
+ * request row (e.g. imported outside Encore) simply don't get the button.
+ */
+export const useRefetchableRequests = (): {
+  albums: Map<string, MusicRequest>;
+  tracks: Map<string, MusicRequest>;
+} => {
+  const { data } = useRequests('all');
+  const albums = new Map<string, MusicRequest>();
+  const tracks = new Map<string, MusicRequest>();
+  for (const r of data ?? []) {
+    if (r.status !== 'available' || r.type === 'artist') continue;
+    if (r.type === 'album' && r.mbReleaseGroupId) albums.set(r.mbReleaseGroupId, r);
+    if (r.type === 'track' && r.mbRecordingId) tracks.set(r.mbRecordingId, r);
+  }
+  return { albums, tracks };
+};
+
 const invalidateRequestData = (qc: ReturnType<typeof useQueryClient>) => {
   void qc.invalidateQueries({ queryKey: ['requests'] });
   void qc.invalidateQueries({ queryKey: ['mb-search'] });

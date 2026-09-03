@@ -247,7 +247,10 @@ export class MusicBrainzClient {
     for (let offset = 0; offset < 300; offset += 100) {
       const data = await this.cached<{ 'release-groups'?: RawReleaseGroup[]; 'release-group-count'?: number }>(
         '/release-group',
-        { artist: artistMbid, limit: '100', offset: String(offset) },
+        // artist-credits inc: without it the browse endpoint returns no
+        // artist-credit and downstream code renders every release as
+        // "Unknown Artist" and can't reconcile against the Jellyfin library
+        { artist: artistMbid, inc: 'artist-credits', limit: '100', offset: String(offset) },
         TTL.browse,
       );
       const page = data['release-groups'] ?? [];
