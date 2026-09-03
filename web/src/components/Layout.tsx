@@ -3,6 +3,7 @@ import { Disc3, Home, ListMusic, LogOut, Mic2, Search, Download } from 'lucide-r
 import { useSession } from '../state/session';
 import { useServerEvents } from '../api/sse';
 import { PlayerBar } from './PlayerBar';
+import { ContextMenu } from './ContextMenu';
 
 const navItems = [
   { to: '/', label: 'Home', icon: Home, end: true },
@@ -55,6 +56,8 @@ export function Layout() {
       <div className="relative shrink-0">
         <PlayerBar />
       </div>
+
+      <ContextMenu />
 
       {/* mobile bottom tabs */}
       <nav className="flex shrink-0 border-t border-zinc-800 bg-panel md:hidden">

@@ -6,6 +6,7 @@ import { fmtDuration } from '../lib/format';
 import { Cover } from './Cover';
 import { AddToPlaylistButton, HeartButton } from './TrackActions';
 import { useRefetchableRequests, useRequestAction } from '../api/queries';
+import { useContextMenu, type ContextMenuItem } from '../state/contextMenu';
 
 interface Props {
   tracks: TrackSummary[];
@@ -21,10 +22,25 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
   const current = usePlayer((s) => currentTrack(s));
   const { tracks: refetchable } = useRefetchableRequests();
   const action = useRequestAction();
+  const openMenu = useContextMenu((s) => s.openMenu);
 
   const onRefetch = (t: TrackSummary, requestId: string) => {
     if (!window.confirm(`Wrong version? This will delete "${t.name}" and grab a different source from Soulseek.`)) return;
     action.mutate({ id: requestId, action: 'refetch' });
+  };
+
+  const openTrackMenu = (e: React.MouseEvent, t: TrackSummary, i: number, requestId: string | undefined) => {
+    e.preventDefault();
+    const items: ContextMenuItem[] = [
+      { label: 'Play', icon: Play, onClick: () => playQueue(tracks, i) },
+    ];
+    if (onRemove) {
+      items.push({ label: 'Remove from playlist', icon: X, onClick: () => onRemove(t, i), danger: true });
+    }
+    if (requestId) {
+      items.push({ label: 'Refetch', icon: RefreshCw, onClick: () => onRefetch(t, requestId), danger: true });
+    }
+    openMenu(e.clientX, e.clientY, items);
   };
 
   return (
@@ -35,6 +51,7 @@ export function TrackList({ tracks, showNumbers = false, showCovers = true, show
         return (
           <div
             key={`${t.id}-${i}`}
+            onContextMenu={(e) => openTrackMenu(e, t, i, refetchReq?.id)}
             className={`group flex w-full items-center gap-1 rounded-md pl-3 pr-2 hover:bg-panel-hover ${
               isCurrent ? 'text-accent' : ''
             }`}
