@@ -4,7 +4,7 @@
  * bundled copy to detect that a newer server has been deployed and the
  * installed APK is stale.
  */
-export const APP_VERSION = '0.4.0';
+export const APP_VERSION = '0.4.1';
 
 // ---------- auth ----------
 export interface LoginRequest {

@@ -308,6 +308,24 @@ export const useRequestImportItem = () => {
   });
 };
 
+/** Fire requests for every missing item in the import in one shot. */
+export const useRequestAllMissing = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      api<{ batch: ImportBatch; requested: number; skipped: number; error?: string }>(
+        `/api/imports/${batchId}/request-all`,
+        { method: 'POST' },
+      ),
+    onSuccess: ({ batch }) => qc.setQueryData(['import', batch.id], batch),
+    onSettled: (_d, _e, batchId) => {
+      void qc.invalidateQueries({ queryKey: ['imports'] });
+      void qc.invalidateQueries({ queryKey: ['import', batchId] });
+      void qc.invalidateQueries({ queryKey: ['requests'] });
+    },
+  });
+};
+
 export const useDeleteImport = () => {
   const qc = useQueryClient();
   return useMutation({

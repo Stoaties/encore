@@ -8,6 +8,7 @@ import {
   deleteImportBatch,
   getImportBatch,
   listImportBatches,
+  requestAllMissing,
   requestImportItem,
 } from './service.js';
 
@@ -40,6 +41,20 @@ export function importRoutes(deps: AppDeps) {
         .parse(req.params);
       const { user } = await jfContext(deps.db, req.user.sub);
       return requestImportItem(deps, user, id, itemId);
+    });
+
+    // Fire requests for every missing item in one shot — returns a summary of
+    // how many landed and how many were skipped (already in-library or already
+    // requested), plus any error that aborted the loop (e.g. daily quota).
+    app.post('/:id/request-all', async (req): Promise<{
+      batch: ImportBatch;
+      requested: number;
+      skipped: number;
+      error?: string;
+    }> => {
+      const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+      const { user } = await jfContext(deps.db, req.user.sub);
+      return requestAllMissing(deps, user, id);
     });
 
     app.delete('/:id', async (req): Promise<{ ok: true }> => {

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Download, ExternalLink, Loader2, Music, Play } from 'lucide-react';
 import type { ImportItem } from '@encore/shared';
-import { useImport, useRequestImportItem } from '../api/queries';
+import { useImport, useRequestAllMissing, useRequestImportItem } from '../api/queries';
 import { ImportStatusChip } from './Playlists';
 import { PageSpinner } from './Home';
 
@@ -10,13 +10,18 @@ export function ImportPage() {
   const { id } = useParams<{ id: string }>();
   const { data: batch, isLoading } = useImport(id);
   const request = useRequestImportItem();
+  const requestAll = useRequestAllMissing();
   const [errorItemId, setErrorItemId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState('');
+  const [banner, setBanner] = useState<string | null>(null);
   if (isLoading || !batch) return <PageSpinner />;
 
   const inLibraryCount = batch.items.filter((i) => i.inLibrary).length;
   const missingCount = batch.items.filter((i) => !i.inLibrary).length;
   const requestedCount = batch.items.filter((i) => !i.inLibrary && i.requestId).length;
+  const requestableCount = batch.items.filter(
+    (i) => !i.inLibrary && !i.requestId && i.matchMbRecordingId,
+  ).length;
 
   const onRequest = (item: ImportItem) => {
     setErrorItemId(null);
@@ -30,6 +35,23 @@ export function ImportPage() {
         },
       },
     );
+  };
+
+  const onRequestAll = () => {
+    if (!requestableCount) return;
+    if (!window.confirm(`Fire ${requestableCount} download request(s)? They'll show up in the Requests tab and grab off Soulseek.`))
+      return;
+    setBanner(null);
+    requestAll.mutate(batch.id, {
+      onSuccess: ({ requested, skipped, error }) => {
+        setBanner(
+          `Requested ${requested} track(s); skipped ${skipped}${
+            error ? ` — stopped: ${error}` : ''
+          }`,
+        );
+      },
+      onError: (e) => setBanner(`Request-all failed: ${e.message}`),
+    });
   };
 
   return (
@@ -58,16 +80,26 @@ export function ImportPage() {
               <ExternalLink className="size-3.5" />
             </a>
           </div>
-          {batch.jellyfinPlaylistId && (
-            <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
+            {batch.jellyfinPlaylistId && (
               <Link
                 to={`/playlists/${batch.jellyfinPlaylistId}`}
                 className="inline-flex items-center gap-2 rounded-full bg-accent px-5 py-2 text-sm font-semibold text-black hover:bg-accent-dim"
               >
                 <Play className="size-4" /> Open playlist
               </Link>
-            </div>
-          )}
+            )}
+            {requestableCount > 0 && (
+              <button
+                onClick={onRequestAll}
+                disabled={requestAll.isPending}
+                className="inline-flex items-center gap-2 rounded-full bg-panel-hover px-5 py-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {requestAll.isPending ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                Request {requestableCount} missing
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -86,6 +118,9 @@ export function ImportPage() {
         <div className="mb-4 rounded-lg border border-amber-900 bg-amber-950/30 p-3 text-sm text-amber-200">
           Spotify’s public embed only exposes the first 100 tracks — anything beyond that isn’t here.
         </div>
+      )}
+      {banner && (
+        <div className="mb-4 rounded-lg border border-zinc-700 bg-panel p-3 text-sm text-zinc-200">{banner}</div>
       )}
 
       <div className="flex flex-col gap-1">

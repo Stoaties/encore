@@ -337,11 +337,42 @@ async function findLibraryTrackId(
 // ---------- request one missing item (fires the normal Encore request pipeline) ----------
 
 /**
- * Turn a single "missing" import item into a track request. Reuses the standard
- * `createRequest` so the resulting row appears in the Requests tab like any
- * other; the SSE handler below will re-slot the track into the Jellyfin
- * playlist at its original position once acquisition completes.
+ * Fire a track request for one item — reuses createRequest so the resulting
+ * row shows up in the Requests tab. On 409 (already requested/available),
+ * links the existing request row to this item.
  */
+async function requestSingleItem(
+  ctx: ImportCtx,
+  user: UserRow,
+  item: ItemRow,
+): Promise<{ ok: boolean; error?: string }> {
+  if (item.inLibrary) return { ok: false, error: 'already in the library' };
+  if (!item.matchMbRecordingId) return { ok: false, error: 'no MusicBrainz match' };
+  try {
+    const req = await createRequest(ctx, user, { type: 'track', mbid: item.matchMbRecordingId });
+    await ctx.db
+      .update(schema.importItems)
+      .set({ matchStatus: 'confirmed', requestId: req.id })
+      .where(eq(schema.importItems.id, item.id));
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof RequestError && err.statusCode === 409) {
+      // already requested / available — link the existing request row if we can find it
+      const existing = await ctx.db.query.requests.findFirst({
+        where: eq(schema.requests.mbRecordingId, item.matchMbRecordingId),
+      });
+      if (existing) {
+        await ctx.db
+          .update(schema.importItems)
+          .set({ matchStatus: 'confirmed', requestId: existing.id })
+          .where(eq(schema.importItems.id, item.id));
+      }
+      return { ok: true };
+    }
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
 export async function requestImportItem(
   ctx: ImportCtx,
   user: UserRow,
@@ -353,34 +384,43 @@ export async function requestImportItem(
     where: eq(schema.importItems.id, itemId),
   });
   if (!item || item.batchId !== batchId) throw new RequestError(404, 'Item not found');
-  if (item.inLibrary) throw new RequestError(409, 'Already in the library');
-  if (!item.matchMbRecordingId) throw new RequestError(409, 'No MusicBrainz match — nothing to request');
-
-  try {
-    const req = await createRequest(ctx, user, { type: 'track', mbid: item.matchMbRecordingId });
-    await ctx.db
-      .update(schema.importItems)
-      .set({ matchStatus: 'confirmed', requestId: req.id })
-      .where(eq(schema.importItems.id, item.id));
-  } catch (err) {
-    // 409 "already requested / available" — link the existing request row if we can find it
-    if (err instanceof RequestError && err.statusCode === 409) {
-      const existing = await ctx.db.query.requests.findFirst({
-        where: eq(schema.requests.mbRecordingId, item.matchMbRecordingId),
-      });
-      if (existing) {
-        await ctx.db
-          .update(schema.importItems)
-          .set({ matchStatus: 'confirmed', requestId: existing.id })
-          .where(eq(schema.importItems.id, item.id));
-      }
-    } else {
-      throw err;
-    }
-  }
-
+  const res = await requestSingleItem(ctx, user, item);
+  if (!res.ok) throw new RequestError(409, res.error ?? 'Cannot request');
   publish(ctx, batch);
   return toImportBatch(batch, await itemsOf(ctx.db, batchId));
+}
+
+/**
+ * Fire track requests for every missing (matched but not-in-library, not-yet-
+ * requested) item in the batch. Stops at the first non-409 error but returns
+ * partial progress so the UI can show how many landed. Respects the per-user
+ * daily quota — a 429 aborts the loop cleanly.
+ */
+export async function requestAllMissing(
+  ctx: ImportCtx,
+  user: UserRow,
+  batchId: string,
+): Promise<{ batch: ImportBatch; requested: number; skipped: number; error?: string }> {
+  const batch = await getBatchOr404(ctx, user, batchId);
+  const items = await itemsOf(ctx.db, batchId);
+  let requested = 0;
+  let skipped = 0;
+  let error: string | undefined;
+  for (const item of items) {
+    if (item.inLibrary || item.requestId || !item.matchMbRecordingId) {
+      skipped++;
+      continue;
+    }
+    const res = await requestSingleItem(ctx, user, item);
+    if (res.ok) requested++;
+    else {
+      // Quota exhausted / server error — surface and stop; already-requested cases were absorbed as ok in the helper.
+      error = res.error;
+      break;
+    }
+  }
+  publish(ctx, batch);
+  return { batch: toImportBatch(batch, await itemsOf(ctx.db, batchId)), requested, skipped, error };
 }
 
 // ---------- SSE hook: slot a newly-available track into its playlist ----------
