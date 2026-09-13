@@ -247,4 +247,18 @@ describe('scoreTrackCandidates', () => {
     expect(cands.map((c) => c.username)).toEqual(['fast_but_dead', 'slowpoke']);
     expect(cands[0]!.file.filename).toBe('a\\Karma Police.flac');
   });
+
+  it('drops wrong-artist matches when the requested artist appears in another candidate (niche-title regression)', () => {
+    // "Mikado" is a niche Chemical Boy track; a popular Yello track shares the name.
+    // Without artist filtering, the popular-artist result with a fast peer wins.
+    const nicheTarget = { artistName: 'Chemical Boy', title: 'Mikado', durationMs: 240_000 };
+    const rightPeer = resp('correct', [file('Music\\Chemical Boy\\Mikado.mp3', { bitRate: 320, length: 240 })]);
+    const wrongPopular = resp(
+      'popular_wrong',
+      [file('Music\\Yello\\Toy\\03 - Mikado.mp3', { bitRate: 320, length: 240 })],
+      { uploadSpeed: 5_000_000 },
+    );
+    const cands = scoreTrackCandidates([wrongPopular, rightPeer], nicheTarget, prefs);
+    expect(cands.map((c) => c.username)).toEqual(['correct']);
+  });
 });

@@ -223,7 +223,8 @@ export function scoreTrackCandidates(
 ): TrackCandidate[] {
   const wantTitle = normalizeForMatch(target.title);
   const wantArtist = normalizeForMatch(target.artistName);
-  const out: TrackCandidate[] = [];
+  const artistUsable = wantArtist.length >= 3;
+  const out: (TrackCandidate & { artistMatch: boolean })[] = [];
 
   for (const resp of responses) {
     for (const file of resp.files) {
@@ -235,6 +236,7 @@ export function scoreTrackCandidates(
 
       const pathNorm = normalizeForMatch(file.filename);
       const titleMatch = wantTitle.length >= 3 && pathNorm.includes(wantTitle);
+      const artistMatch = artistUsable && pathNorm.includes(wantArtist);
       const dur = durationScore(file.length, target.durationMs, { close: 60, near: 30, far: -60 });
       if (!titleMatch && dur <= 0) continue; // nothing ties this file to the track
 
@@ -243,22 +245,35 @@ export function scoreTrackCandidates(
         file,
         format,
         totalBytes: file.size,
+        artistMatch,
         score:
           rank * 400 +
           peerScore(resp) +
           (titleMatch ? 80 : 0) +
-          (wantArtist && pathNorm.includes(wantArtist) ? 30 : 0) +
+          (artistMatch ? 200 : 0) + // was 30 — make artist match dominate over peer speed
           dur +
           bitrateBonus(format, file.bitRate ?? null),
       });
     }
   }
+  // If we know the artist and any candidate places it in the path, drop the
+  // rest. Without this, niche-title matches ("Mikado") tie to the first
+  // popular-artist result and refetches cycle through wrong artists forever.
+  // The fallback preserves title-only matches when nobody exposes the artist
+  // in their path (common for cover releases named just "<Title>.mp3").
+  const filtered = artistUsable && out.some((c) => c.artistMatch)
+    ? out.filter((c) => c.artistMatch)
+    : out;
   // one candidate per peer (like album candidates): when a transfer fails, the
   // retry must move to a different source, not another file on the same dead peer
   const bestByPeer = new Map<string, TrackCandidate>();
-  for (const c of out) {
+  for (const c of filtered) {
     const cur = bestByPeer.get(c.username);
-    if (!cur || c.score > cur.score) bestByPeer.set(c.username, c);
+    if (!cur || c.score > cur.score) {
+      // strip the internal artistMatch flag before returning
+      const { artistMatch: _, ...bare } = c;
+      bestByPeer.set(c.username, bare);
+    }
   }
   return [...bestByPeer.values()].sort((a, b) => b.score - a.score).slice(0, 10);
 }
