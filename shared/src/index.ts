@@ -164,6 +164,10 @@ export interface MusicRequest {
   errorMessage?: string | null;
   /** 0-100 while downloading */
   progress?: number | null;
+  /** Jellyfin item id for the resulting Audio, set once a track request is available (null for albums/artists). */
+  jellyfinItemId?: string | null;
+  /** Where the resulting file came from — informational, controls UI badges. */
+  source?: 'soulseek' | 'youtube' | null;
   createdAt: string;
   updatedAt: string;
   children?: MusicRequest[];

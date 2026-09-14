@@ -127,7 +127,7 @@ export const useRequestAction = () => {
       action,
     }: {
       id: string;
-      action: 'approve' | 'deny' | 'retry' | 'refetch' | 'delete';
+      action: 'approve' | 'deny' | 'retry' | 'refetch' | 'youtube' | 'delete';
     }) => {
       if (action === 'delete') {
         await api<void>(`/api/requests/${id}`, { method: 'DELETE' });

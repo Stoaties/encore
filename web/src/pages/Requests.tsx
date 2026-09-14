@@ -9,6 +9,8 @@ import {
   Mic2,
   Music,
   Music2,
+  Pause,
+  Play,
   RefreshCw,
   RotateCcw,
   ScrollText,
@@ -17,8 +19,10 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
+  Youtube,
   X,
 } from 'lucide-react';
+import { jfAudioUrl } from '@encore/shared';
 import type {
   AppSettings,
   MbArtistResult,
@@ -237,6 +241,87 @@ function RequestLogs({ id }: { id: string }) {
   );
 }
 
+/**
+ * Inline preview player: <audio> with a custom play/pause + seek bar. Streams
+ * the imported file directly from Jellyfin using the current user's JF session
+ * (same URL scheme as the main PlayerBar, but scoped to a single item so it
+ * doesn't disturb the global queue).
+ */
+function InlinePreview({ jellyfinItemId, durationHintMs }: { jellyfinItemId: string; durationHintMs?: number | null }) {
+  const session = useSession((s) => s.session);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState((durationHintMs ?? 0) / 1000 || 0);
+
+  useEffect(() => {
+    // rewind + pause whenever the item id changes (e.g. after a refetch imports a different file)
+    const el = audioRef.current;
+    if (!el) return;
+    el.pause();
+    el.currentTime = 0;
+    setPlaying(false);
+    setPosition(0);
+  }, [jellyfinItemId]);
+
+  if (!session?.jellyfin) return null;
+  const src = jfAudioUrl(session.jellyfin, jellyfinItemId);
+
+  const toggle = () => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (el.paused) void el.play().catch(() => {});
+    else el.pause();
+  };
+  const seek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.currentTime = Number(e.target.value);
+    setPosition(el.currentTime);
+  };
+  const fmt = (s: number) => {
+    if (!isFinite(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-2 rounded-md bg-surface px-2 py-1.5">
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onTimeUpdate={() => setPosition(audioRef.current?.currentTime ?? 0)}
+        onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? duration)}
+      />
+      <button
+        onClick={toggle}
+        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-black hover:bg-accent-dim"
+        aria-label={playing ? 'Pause preview' : 'Play preview'}
+        title={playing ? 'Pause preview' : 'Play preview'}
+      >
+        {playing ? <Pause className="size-4" /> : <Play className="size-4 translate-x-[1px]" />}
+      </button>
+      <span className="w-10 shrink-0 text-right font-mono text-[11px] text-zinc-500">{fmt(position)}</span>
+      <input
+        type="range"
+        min={0}
+        max={duration || 0}
+        step={0.1}
+        value={position}
+        onChange={seek}
+        className="flex-1 accent-accent"
+        aria-label="Seek"
+      />
+      <span className="w-10 shrink-0 font-mono text-[11px] text-zinc-500">{fmt(duration)}</span>
+    </div>
+  );
+}
+
 function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => void }) {
   const session = useSession((s) => s.session);
   const action = useRequestAction();
@@ -253,11 +338,15 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
       ? `${r.children?.length ?? 0} albums`
       : `${r.artistName}${r.type === 'track' && r.albumTitle ? ` · ${r.albumTitle}` : ''}${r.year ? ` · ${r.year}` : ''}`;
 
-  const act = (a: 'approve' | 'deny' | 'retry' | 'refetch' | 'delete') =>
+  const act = (a: 'approve' | 'deny' | 'retry' | 'refetch' | 'youtube' | 'delete') =>
     action.mutate({ id: r.id, action: a }, { onError: (e) => onError(e.message) });
 
   const canRetry = r.status === 'failed' || (r.type === 'artist' && r.children?.some((c) => c.status === 'failed'));
   const canRefetch = r.status === 'available' && r.type !== 'artist' && (isAdmin || mine);
+  const canYoutube =
+    r.type === 'track' &&
+    (r.status === 'failed' || r.status === 'available') &&
+    (isAdmin || mine);
   const canDelete = isAdmin || (mine && ['pending', 'denied', 'failed'].includes(r.status));
 
   const confirmRefetch = () => {
@@ -313,6 +402,24 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
               <RefreshCw className="size-4" />
             </button>
           )}
+          {canYoutube && (
+            <button
+              onClick={() => {
+                const label = r.trackTitle ?? 'this track';
+                const msg =
+                  r.status === 'failed'
+                    ? `Try to fetch "${label}" from YouTube instead?`
+                    : `Replace "${label}" with the top YouTube result?`;
+                if (window.confirm(msg)) act('youtube');
+              }}
+              disabled={action.isPending}
+              className={iconBtn}
+              aria-label="Fetch from YouTube"
+              title="Fetch from YouTube (yt-dlp)"
+            >
+              <Youtube className="size-4 text-red-500" />
+            </button>
+          )}
           {isAdmin && !['pending', 'denied'].includes(r.status) && (
             <button
               onClick={() => setShowLogs(!showLogs)}
@@ -336,6 +443,17 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
         </div>
       )}
       {r.errorMessage && <p className="mt-2 text-xs text-red-400">{r.errorMessage}</p>}
+      {r.status === 'available' && r.type === 'track' && r.jellyfinItemId && (
+        <>
+          <InlinePreview
+            jellyfinItemId={r.jellyfinItemId}
+            durationHintMs={/* meta.durationMs is not currently exposed; fall back to no hint */ null}
+          />
+          {r.source === 'youtube' && (
+            <p className="mt-1 text-[11px] text-zinc-500">Source: YouTube</p>
+          )}
+        </>
+      )}
       {showLogs && <RequestLogs id={r.id} />}
       {r.type === 'artist' && (r.children?.length ?? 0) > 0 && (
         <div className="mt-2 border-t border-zinc-800 pt-2">

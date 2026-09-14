@@ -13,6 +13,11 @@ RUN npm run build
 
 # the server is a single esbuild bundle, so the runtime image carries no node_modules
 FROM node:22-alpine
+# yt-dlp + ffmpeg for the "grab this track from YouTube" fallback path.
+# yt-dlp: source of downloads. ffmpeg: extracts audio to mp3.
+# Cover art + MB tags are written after download by the existing tagging
+# module (writeTags), so we don't need atomicparsley for thumbnail embedding.
+RUN apk update && apk add --no-cache yt-dlp ffmpeg
 ENV NODE_ENV=production \
     WEB_DIST=/app/web/dist \
     PORT=8080

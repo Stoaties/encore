@@ -25,6 +25,7 @@ import {
 } from './scoring.js';
 import { albumDirParts, sanitizePathPart, trackFileName } from './naming.js';
 import { fetchCover, verifyAudio, writeTags, AudioVerifyError } from './tagging.js';
+import { downloadTopMatch, YoutubeNotFoundError } from '../youtube/client.js';
 
 /** Unrecoverable for this request — do not retry the job. */
 export class PermanentError extends Error {}
@@ -168,7 +169,17 @@ export class AcquisitionWorker {
         await this.deps.imports.resolve(batchId, jlog);
       } else {
         if (!job.requestId) throw new PermanentError('job has no request');
-        await this.pipeline(job.requestId, jlog);
+        // Same 'acquire-request' job type is reused for the YouTube fallback so
+        // it inherits the same retry / backoff / logging machinery. The chosen
+        // source lives in the request row's meta, not the job payload, so users
+        // can toggle it via a dedicated API endpoint even after a job crashes.
+        const req = await this.getRequest(job.requestId);
+        const source = (req.meta as { source?: string } | null)?.source;
+        if (source === 'youtube') {
+          await this.pipelineYoutube(job.requestId, jlog);
+        } else {
+          await this.pipeline(job.requestId, jlog);
+        }
       }
       await this.deps.db
         .update(schema.jobs)
@@ -604,17 +615,29 @@ export class AcquisitionWorker {
 
     const deadline = Date.now() + this.indexTimeoutMs;
     let rescanned = false;
-    let indexed = false;
-    while (Date.now() < deadline && !indexed) {
+    let indexedItemId: string | null = null;
+    while (Date.now() < deadline && !indexedItemId) {
       await sleep(3000);
-      indexed = await this.isIndexed(target).catch(() => false);
-      if (!indexed && !rescanned && Date.now() > deadline - this.indexTimeoutMs / 2) {
+      indexedItemId = await this.findIndexed(target).catch(() => null);
+      if (!indexedItemId && !rescanned && Date.now() > deadline - this.indexTimeoutMs / 2) {
         rescanned = true;
         await jellyfin.refreshLibrary(config.jellyfinApiKey!).catch(() => {});
       }
     }
-    if (indexed) {
-      await jlog('info', 'Jellyfin has indexed the new files');
+    if (indexedItemId) {
+      await jlog('info', `Jellyfin has indexed the new files (itemId ${indexedItemId})`);
+      // Track requests: persist the itemId so the UI can render a preview player.
+      if (target.kind === 'track') {
+        const cur = await this.deps.db.query.requests.findFirst({
+          where: eq(schema.requests.id, req.id),
+          columns: { meta: true },
+        });
+        const curMeta = (cur?.meta ?? {}) as Record<string, unknown>;
+        await this.deps.db
+          .update(schema.requests)
+          .set({ meta: { ...curMeta, jellyfinItemId: indexedItemId }, updatedAt: new Date() })
+          .where(eq(schema.requests.id, req.id));
+      }
     } else {
       await jlog('warn', 'Jellyfin did not index the files in time — marking available anyway');
     }
@@ -629,7 +652,8 @@ export class AcquisitionWorker {
     }
   }
 
-  private async isIndexed(target: Target): Promise<boolean> {
+  /** Returns the Jellyfin item id for the newly-indexed release/track, or null if not visible yet. */
+  private async findIndexed(target: Target): Promise<string | null> {
     const { jellyfin, config } = this.deps;
     const token = config.jellyfinApiKey!;
     if (target.kind === 'album') {
@@ -643,11 +667,12 @@ export class AcquisitionWorker {
       });
       const wantTitle = normalizeForMatch(tl.title);
       const wantArtist = normalizeForMatch(tl.isVariousArtists ? 'Various Artists' : tl.artistName);
-      return res.Items.some((item) => {
+      const hit = res.Items.find((item) => {
         if (item.ProviderIds?.MusicBrainzReleaseGroup === tl.releaseGroupMbid) return true;
         const artist = item.AlbumArtist ?? item.Artists?.[0] ?? '';
         return normalizeForMatch(item.Name ?? '') === wantTitle && normalizeForMatch(artist) === wantArtist;
       });
+      return hit?.Id ?? null;
     }
     const res = await jellyfin.items(token, {
       IncludeItemTypes: 'Audio',
@@ -658,11 +683,114 @@ export class AcquisitionWorker {
     });
     const wantTitle = normalizeForMatch(target.title);
     const wantArtist = normalizeForMatch(target.artistName);
-    return res.Items.some((item) => {
+    const hit = res.Items.find((item) => {
       if (normalizeForMatch(item.Name ?? '') !== wantTitle) return false;
       const artists = [item.AlbumArtist, ...(item.Artists ?? [])].filter((a): a is string => !!a);
       return artists.some((a) => normalizeForMatch(a) === wantArtist);
     });
+    return hit?.Id ?? null;
+  }
+
+  // ---------- YouTube fallback pipeline ----------
+
+  /**
+   * Tracks that failed on Soulseek can be re-acquired from YouTube via yt-dlp.
+   * Only track requests are supported — no album-mode YT search. The file is
+   * downloaded to the staging dir, verified, tagged with MusicBrainz metadata
+   * (same as the Soulseek path), then moved into the music library.
+   *
+   * The user opts in via POST /requests/:id/youtube, which flips
+   * request.meta.source to 'youtube' before enqueuing an acquire-request job.
+   */
+  private async pipelineYoutube(requestId: string, jlog: Jlog): Promise<void> {
+    const { config, mb } = this.deps;
+    if (!config.jellyfinApiKey) throw new PermanentError('JELLYFIN_API_KEY must be configured for acquisition');
+
+    const req = await this.getRequest(requestId);
+    if (req.type !== 'track') throw new PermanentError('YouTube fallback is only available for track requests');
+    if (['pending', 'denied', 'available'].includes(req.status)) {
+      await jlog('info', `Request is ${req.status} — nothing to do`);
+      return;
+    }
+    if (!req.mbRecordingId) throw new PermanentError('track request has no recording MBID');
+
+    await this.setRequest(req.id, { status: 'searching', progress: null, errorMessage: null });
+    const rec = await mb.lookupRecording(req.mbRecordingId);
+    const target: Target = {
+      kind: 'track',
+      title: rec.title,
+      artistName: rec.artistName,
+      durationMs: rec.durationMs,
+      releaseTitle: rec.releaseTitle,
+      releaseGroupMbid: rec.releaseGroupMbid,
+      artistMbid: rec.artistMbid,
+      recordingMbid: rec.mbid,
+    };
+    await jlog('info', `Fetching “${target.title}” by ${target.artistName} from YouTube`);
+
+    const staging = path.join(config.stagingPath, `${req.id}-yt`);
+    await fs.mkdir(staging, { recursive: true });
+    try {
+      await this.setRequest(req.id, { status: 'downloading', progress: null });
+      const query = `${target.artistName} ${target.title}`;
+      const result = await downloadTopMatch(query, {
+        stagingDir: staging,
+        log: (m) => void jlog('info', m),
+      });
+      await jlog(
+        'info',
+        `Downloaded YouTube video ${result.videoId} — “${result.videoTitle}”${result.durationSec ? ` (${Math.round(result.durationSec)}s)` : ''}`,
+      );
+
+      await this.setRequest(req.id, { status: 'processing', progress: null });
+
+      // reuse the tag+move flow: verify, embed MB metadata, place at Artist/Album/Title.mp3
+      this.verify(result.filePath, result.videoTitle);
+      const cover = target.releaseGroupMbid ? await fetchCover(target.releaseGroupMbid) : null;
+      writeTags(result.filePath, {
+        title: target.title,
+        artists: [target.artistName],
+        albumArtist: target.artistName,
+        album: target.releaseTitle ?? 'Singles',
+        year: null,
+        trackNo: 0,
+        trackCount: 0,
+        discNo: 0,
+        discCount: 0,
+        mbRecordingId: target.recordingMbid,
+        mbReleaseGroupId: target.releaseGroupMbid,
+        mbArtistId: target.artistMbid,
+        cover,
+      });
+      const artistDir = sanitizePathPart(target.artistName);
+      const albumDir = sanitizePathPart(target.releaseTitle ?? 'Singles');
+      const dest = path.join(config.musicLibraryPath, artistDir, albumDir, `${sanitizePathPart(target.title)}.mp3`);
+      await moveFile(result.filePath, dest);
+      await jlog('info', `Tagged and moved to ${artistDir}/${albumDir}/${sanitizePathPart(target.title)}.mp3`);
+
+      // Record that this came from YouTube (surfaces as a badge in the UI + guides refetch).
+      const cur = await this.deps.db.query.requests.findFirst({
+        where: eq(schema.requests.id, req.id),
+        columns: { meta: true },
+      });
+      const curMeta = (cur?.meta ?? {}) as Record<string, unknown>;
+      // Clear the Soulseek-only fields; store the YouTube video id for auditability.
+      delete curMeta.lastSource;
+      await this.deps.db
+        .update(schema.requests)
+        .set({
+          meta: { ...curMeta, source: 'youtube', youtubeVideoId: result.videoId },
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.requests.id, req.id));
+
+      await this.finishAvailable(req, target, jlog);
+    } catch (err) {
+      if (err instanceof YoutubeNotFoundError) throw new PermanentError(err.message);
+      throw err;
+    } finally {
+      await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

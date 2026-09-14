@@ -43,7 +43,12 @@ export const OPEN_STATUSES: RequestStatus[] = ['pending', 'approved', 'searching
 // ---------- serialization ----------
 
 function toMusicRequest(row: RequestRow, username: string, children?: MusicRequest[]): MusicRequest {
-  const meta = (row.meta ?? {}) as { coverUrl?: string; year?: number };
+  const meta = (row.meta ?? {}) as {
+    coverUrl?: string;
+    year?: number;
+    jellyfinItemId?: string | null;
+    source?: 'soulseek' | 'youtube' | null;
+  };
   return {
     id: row.id,
     type: row.type,
@@ -60,6 +65,8 @@ function toMusicRequest(row: RequestRow, username: string, children?: MusicReque
     parentId: row.parentId,
     errorMessage: row.errorMessage,
     progress: row.progress,
+    jellyfinItemId: meta.jellyfinItemId ?? null,
+    source: meta.source ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     ...(children ? { children } : {}),
@@ -325,6 +332,38 @@ export async function denyRequest(ctx: RequestCtx, id: string): Promise<MusicReq
     .update(schema.requests)
     .set(patch)
     .where(and(eq(schema.requests.parentId, id), eq(schema.requests.status, 'pending')));
+  return publishUpdated(ctx, id);
+}
+
+/**
+ * "Soulseek didn't have it — pull from YouTube instead."
+ *
+ * Only track requests. Marks the request's source as 'youtube', clears the
+ * failure state, and re-enqueues the acquire job. The worker checks
+ * meta.source and routes to the yt-dlp pipeline.
+ */
+export async function retryOnYoutube(ctx: RequestCtx, user: UserRow, id: string): Promise<MusicRequest> {
+  const row = await getRequestOr404(ctx.db, id);
+  if (!user.isAdmin && row.requestedBy !== user.id) throw new RequestError(403, 'Not your request');
+  if (row.type !== 'track') throw new RequestError(409, 'YouTube fallback is only available for track requests');
+  // Allow re-fetch from YouTube after either a failure (obvious case) or an
+  // available Soulseek pull that turned out to be the wrong version.
+  if (!['failed', 'available'].includes(row.status)) {
+    throw new RequestError(409, `Cannot pull from YouTube on a ${row.status} request`);
+  }
+  const meta = (row.meta ?? {}) as Record<string, unknown>;
+  await ctx.db
+    .update(schema.requests)
+    .set({
+      status: 'approved',
+      errorMessage: null,
+      progress: null,
+      availableAt: null,
+      meta: { ...meta, source: 'youtube' },
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.requests.id, id));
+  await enqueueAcquire(ctx.db, [id]);
   return publishUpdated(ctx, id);
 }
 

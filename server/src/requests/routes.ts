@@ -10,6 +10,7 @@ import {
   approveRequest,
   denyRequest,
   retryRequest,
+  retryOnYoutube,
   refetchRequest,
   deleteRequest,
   listRequests,
@@ -80,6 +81,11 @@ export function requestRoutes(deps: AppDeps) {
     app.post('/:id/refetch', { preHandler: app.authenticate }, async (req): Promise<MusicRequest> => {
       const { id } = IdParam.parse(req.params);
       return refetchRequest(ctx, await requireUser(req.user.sub), id);
+    });
+
+    app.post('/:id/youtube', { preHandler: app.authenticate }, async (req): Promise<MusicRequest> => {
+      const { id } = IdParam.parse(req.params);
+      return retryOnYoutube(ctx, await requireUser(req.user.sub), id);
     });
 
     app.delete('/:id', { preHandler: app.authenticate }, async (req, reply) => {
