@@ -35,7 +35,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/stoaties/encore:yt-direct
-            ghcr.io/stoaties/encore:${{ github.sha }}
+            ghcr.io/stoaties/encore-app:yt-direct
+            ghcr.io/stoaties/encore-app:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
