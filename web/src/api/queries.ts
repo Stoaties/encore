@@ -17,6 +17,7 @@ import type {
   PlaylistSummary,
   SearchResults,
   TrackSummary,
+  YoutubeCandidate,
 } from '@encore/shared';
 import { api } from './client';
 
@@ -135,6 +136,28 @@ export const useRequestAction = () => {
       }
       return api<MusicRequest>(`/api/requests/${id}/${action}`, { method: 'POST' });
     },
+    onSettled: () => invalidateRequestData(qc),
+  });
+};
+
+/** Top-10 YouTube search results for manually picking the right video. */
+export const useYoutubeCandidates = (id: string, query: string | undefined, enabled: boolean) =>
+  useQuery({
+    queryKey: ['youtube-candidates', id, query ?? ''],
+    queryFn: () =>
+      api<YoutubeCandidate[]>(
+        `/api/requests/${id}/youtube-candidates${query ? `?q=${encodeURIComponent(query)}` : ''}`,
+      ),
+    enabled,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+export const usePickYoutube = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, videoId }: { id: string; videoId: string }) =>
+      api<MusicRequest>(`/api/requests/${id}/youtube-pick`, { method: 'POST', body: { videoId } }),
     onSettled: () => invalidateRequestData(qc),
   });
 };

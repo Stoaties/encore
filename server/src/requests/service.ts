@@ -16,6 +16,7 @@ import { NoJellyfinSessionError } from '../auth/session.js';
 import { getSettings } from '../settings/service.js';
 import { ITEM_FIELDS } from '../jellyfin/mappers.js';
 import type { BlocklistedSource } from '../acquisition/worker.js';
+import { searchYoutube, type YoutubeCandidate } from '../youtube/client.js';
 
 export class RequestError extends Error {
   constructor(
@@ -301,6 +302,83 @@ export async function createRequest(ctx: RequestCtx, user: UserRow, body: Create
   return publishUpdated(ctx, parent!.id);
 }
 
+export interface YoutubeDirectArgs {
+  /** The exact YouTube video to download the audio from. */
+  videoId: string;
+  title: string;
+  artist?: string | null;
+  album?: string | null;
+  durationMs?: number | null;
+  coverUrl?: string | null;
+  /** MusicBrainz enrichment, when the import matched a recording. Optional. */
+  mbRecordingId?: string | null;
+  mbReleaseGroupId?: string | null;
+  mbArtistId?: string | null;
+}
+
+/**
+ * Create a track request fulfilled by downloading a SPECIFIC YouTube video
+ * (meta.videoId) rather than searching Soulseek. Content comes from the exact
+ * video; tags come from MusicBrainz when `mbRecordingId` is set, otherwise from
+ * the video's own title/channel. Unlike createRequest, no MusicBrainz match is
+ * required — this is how the YouTube playlist import pulls in everything.
+ */
+export async function createYoutubeDirectRequest(
+  ctx: RequestCtx,
+  user: UserRow,
+  args: YoutubeDirectArgs,
+): Promise<MusicRequest> {
+  if (!user.jellyfinToken) throw new NoJellyfinSessionError();
+  const settings = await getSettings(ctx.db);
+
+  if (!user.isAdmin && settings.quotaPerUserPerDay > 0) {
+    const since = new Date(Date.now() - 24 * 3600_000);
+    const [row] = await ctx.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.requests)
+      .where(
+        and(
+          eq(schema.requests.requestedBy, user.id),
+          isNull(schema.requests.parentId),
+          gt(schema.requests.createdAt, since),
+        ),
+      );
+    if ((row?.count ?? 0) >= settings.quotaPerUserPerDay) {
+      throw new RequestError(429, `Daily request quota reached (${settings.quotaPerUserPerDay}/day)`);
+    }
+  }
+
+  const autoApprove = user.isAdmin ? settings.autoApprove.admins : settings.autoApprove.users;
+  const status: RequestStatus = autoApprove ? 'approved' : 'pending';
+  const approval = autoApprove ? { approvedBy: user.id, approvedAt: new Date() } : {};
+
+  const [row] = await ctx.db
+    .insert(schema.requests)
+    .values({
+      type: 'track',
+      status,
+      requestedBy: user.id,
+      artistName: args.artist || 'Unknown Artist',
+      trackTitle: args.title,
+      albumTitle: args.album ?? null,
+      mbRecordingId: args.mbRecordingId ?? null,
+      mbReleaseGroupId: args.mbReleaseGroupId ?? null,
+      mbArtistId: args.mbArtistId ?? null,
+      meta: {
+        source: 'youtube',
+        videoId: args.videoId,
+        ytTitle: args.title,
+        ytArtist: args.artist ?? null,
+        coverUrl: args.coverUrl ?? null,
+        durationMs: args.durationMs ?? null,
+      },
+      ...approval,
+    })
+    .returning();
+  if (status === 'approved') await enqueueAcquire(ctx.db, [row!.id]);
+  return publishUpdated(ctx, row!.id);
+}
+
 // ---------- moderation / lifecycle ----------
 
 async function getRequestOr404(db: Db, id: string): Promise<RequestRow> {
@@ -360,6 +438,60 @@ export async function retryOnYoutube(ctx: RequestCtx, user: UserRow, id: string)
       progress: null,
       availableAt: null,
       meta: { ...meta, source: 'youtube' },
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.requests.id, id));
+  await enqueueAcquire(ctx.db, [id]);
+  return publishUpdated(ctx, id);
+}
+
+/**
+ * Top YouTube search results for a track request, so the user can pick exactly
+ * which video to grab when the automatic match is wrong. Metadata only — no
+ * download. `q` overrides the default "<artist> <title>" query.
+ */
+export async function youtubeCandidates(
+  ctx: RequestCtx,
+  user: UserRow,
+  id: string,
+  q?: string,
+): Promise<YoutubeCandidate[]> {
+  const row = await getRequestOr404(ctx.db, id);
+  if (!user.isAdmin && row.requestedBy !== user.id) throw new RequestError(403, 'Not your request');
+  if (row.type !== 'track') throw new RequestError(409, 'YouTube is only available for track requests');
+  const query = (q && q.trim()) || `${row.artistName} ${row.trackTitle ?? ''}`.trim();
+  if (!query) throw new RequestError(400, 'No search query');
+  return searchYoutube(query, 10);
+}
+
+/**
+ * Pin a request to a specific YouTube video the user chose, then (re)queue it so
+ * the acquisition worker downloads exactly that video.
+ */
+export async function pickYoutubeVideo(
+  ctx: RequestCtx,
+  user: UserRow,
+  id: string,
+  videoId: string,
+): Promise<MusicRequest> {
+  const row = await getRequestOr404(ctx.db, id);
+  if (!user.isAdmin && row.requestedBy !== user.id) throw new RequestError(403, 'Not your request');
+  if (row.type !== 'track') throw new RequestError(409, 'YouTube is only available for track requests');
+  const meta = (row.meta ?? {}) as Record<string, unknown>;
+  await ctx.db
+    .update(schema.requests)
+    .set({
+      status: 'approved',
+      errorMessage: null,
+      progress: null,
+      availableAt: null,
+      meta: {
+        ...meta,
+        source: 'youtube',
+        videoId,
+        ytTitle: meta.ytTitle ?? row.trackTitle,
+        ytArtist: meta.ytArtist ?? row.artistName,
+      },
       updatedAt: new Date(),
     })
     .where(eq(schema.requests.id, id));

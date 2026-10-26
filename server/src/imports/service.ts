@@ -9,7 +9,7 @@ import type { MusicBrainzClient } from '../musicbrainz/client.js';
 import type { UserRow } from '../auth/session.js';
 import { normalizeForMatch } from '@encore/shared';
 import { ITEM_FIELDS } from '../jellyfin/mappers.js';
-import { createRequest, trackInLibrary, RequestError } from './../requests/service.js';
+import { createRequest, createYoutubeDirectRequest, trackInLibrary, RequestError } from './../requests/service.js';
 import { ImportProviderError, fetchPlaylist, parsePlaylistUrl } from './providers.js';
 import { matchSourceTrack } from './matching.js';
 import { uploadJellyfinPrimaryImage } from './jellyfinImage.js';
@@ -46,6 +46,7 @@ function toImportItem(row: ItemRow): ImportItem {
     matchStatus: row.matchStatus,
     inLibrary: row.inLibrary,
     requestId: row.requestId,
+    sourceVideoId: row.sourceVideoId,
   };
 }
 
@@ -187,6 +188,7 @@ export async function resolveImportBatch(ctx: ImportCtx, batchId: string, jlog: 
         sourceTitle: t.title,
         sourceArtist: t.artist ?? null,
         sourceAlbum: t.album ?? null,
+        sourceVideoId: t.videoId ?? null,
         durationMs: t.durationMs ?? null,
       })),
     )
@@ -347,6 +349,32 @@ async function requestSingleItem(
   item: ItemRow,
 ): Promise<{ ok: boolean; error?: string }> {
   if (item.inLibrary) return { ok: false, error: 'already in the library' };
+
+  // YouTube import: download the exact playlist video. Tags come from MusicBrainz
+  // when it matched, otherwise from the video's own title/artist. No MB match
+  // required — this is what lets the whole playlist come in.
+  if (item.sourceVideoId) {
+    try {
+      const req = await createYoutubeDirectRequest(ctx, user, {
+        videoId: item.sourceVideoId,
+        title: item.matchTitle ?? item.sourceTitle,
+        artist: item.matchArtist ?? item.sourceArtist ?? null,
+        album: item.matchAlbum ?? item.sourceAlbum ?? null,
+        durationMs: item.durationMs,
+        mbRecordingId: item.matchMbRecordingId,
+        mbReleaseGroupId: item.matchMbReleaseGroupId,
+      });
+      await ctx.db
+        .update(schema.importItems)
+        .set({ matchStatus: 'confirmed', requestId: req.id })
+        .where(eq(schema.importItems.id, item.id));
+      return { ok: true };
+    } catch (err) {
+      if (err instanceof RequestError && err.statusCode === 409) return { ok: true };
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
   if (!item.matchMbRecordingId) return { ok: false, error: 'no MusicBrainz match' };
   try {
     const req = await createRequest(ctx, user, { type: 'track', mbid: item.matchMbRecordingId });
@@ -407,7 +435,10 @@ export async function requestAllMissing(
   let skipped = 0;
   let error: string | undefined;
   for (const item of items) {
-    if (item.inLibrary || item.requestId || !item.matchMbRecordingId) {
+    // Skip already-handled items, and (for non-YouTube imports) anything without
+    // an MB match. YouTube items download directly from their video, so they
+    // only need a sourceVideoId.
+    if (item.inLibrary || item.requestId || (!item.matchMbRecordingId && !item.sourceVideoId)) {
       skipped++;
       continue;
     }

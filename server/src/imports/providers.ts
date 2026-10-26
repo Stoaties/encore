@@ -6,6 +6,10 @@ export interface SourceTrack {
   artist?: string | null;
   album?: string | null;
   durationMs?: number | null;
+  /** YouTube video id (youtube source only) — the exact video to download from. */
+  videoId?: string | null;
+  /** Raw YouTube video title, kept for metadata fallback when MusicBrainz can't match. */
+  videoTitle?: string | null;
 }
 export interface SourcePlaylist {
   title: string;
@@ -162,6 +166,7 @@ interface YtPlaylistItem {
     title?: string;
     videoOwnerChannelTitle?: string;
     thumbnails?: { high?: { url?: string }; standard?: { url?: string }; maxres?: { url?: string } };
+    resourceId?: { videoId?: string };
   };
 }
 
@@ -223,7 +228,11 @@ export async function fetchYoutubePlaylist(
     const data = (await res.json()) as { items?: YtPlaylistItem[]; nextPageToken?: string };
     for (const item of data.items ?? []) {
       const parsed = parseYtTitle(item.snippet?.title ?? '', item.snippet?.videoOwnerChannelTitle);
-      if (parsed) tracks.push(parsed);
+      if (parsed) {
+        parsed.videoId = item.snippet?.resourceId?.videoId ?? null;
+        parsed.videoTitle = item.snippet?.title ?? null;
+        tracks.push(parsed);
+      }
     }
     if (!data.nextPageToken) break;
     pageToken = data.nextPageToken;

@@ -298,6 +298,15 @@ export interface ReportPlayBody {
 
 // ---------- playlist import ----------
 export type ImportSource = 'spotify' | 'youtube';
+
+/** A YouTube search result shown in the manual "choose the right video" picker. */
+export interface YoutubeCandidate {
+  videoId: string;
+  title: string;
+  channel?: string | null;
+  durationSec?: number | null;
+  thumbnail?: string | null;
+}
 // resolving = fetching source + matching; done = Jellyfin playlist built,
 // missing tracks can be requested inline; failed = something upstream broke.
 // ('review' / 'requesting' are legacy — kept in the enum for older rows.)
@@ -318,6 +327,8 @@ export interface ImportItem {
   matchStatus: MatchStatus;
   inLibrary?: boolean;
   requestId?: string | null;
+  /** YouTube video id this item came from (youtube imports) — enables direct download. */
+  sourceVideoId?: string | null;
 }
 export interface ImportBatch {
   id: string;

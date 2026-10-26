@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Clock,
   Disc3,
+  ListVideo,
   Loader2,
   Mic2,
   Music,
@@ -43,6 +44,7 @@ import {
   useUpdateSettings,
 } from '../api/queries';
 import { useSession } from '../state/session';
+import { YoutubePicker } from '../components/YoutubePicker';
 import { PageSpinner } from './Home';
 
 // ---------- small bits ----------
@@ -327,6 +329,7 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
   const action = useRequestAction();
   const [showChildren, setShowChildren] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
   const isAdmin = session?.user.isAdmin ?? false;
   const mine = session?.user.id === r.requestedBy.id;
   const Icon = TYPE_ICON[r.type];
@@ -360,6 +363,7 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
 
   return (
     <div className="rounded-lg bg-panel p-3">
+      {showPicker && <YoutubePicker request={r} onClose={() => setShowPicker(false)} />}
       <div className="flex items-center gap-3">
         <MbCover src={r.coverUrl} />
         <div className="min-w-0 flex-1">
@@ -418,6 +422,17 @@ function RequestCard({ r, onError }: { r: MusicRequest; onError: (m: string) => 
               title="Fetch from YouTube (yt-dlp)"
             >
               <Youtube className="size-4 text-red-500" />
+            </button>
+          )}
+          {canYoutube && (
+            <button
+              onClick={() => setShowPicker(true)}
+              disabled={action.isPending}
+              className={iconBtn}
+              aria-label="Choose YouTube version"
+              title="Not the right one? Choose from YouTube search results"
+            >
+              <ListVideo className="size-4" />
             </button>
           )}
           {isAdmin && !['pending', 'denied'].includes(r.status) && (

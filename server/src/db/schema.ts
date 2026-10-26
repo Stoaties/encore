@@ -184,6 +184,7 @@ export const importItems = pgTable(
     sourceTitle: text('source_title').notNull(),
     sourceArtist: text('source_artist'),
     sourceAlbum: text('source_album'),
+    sourceVideoId: text('source_video_id'),
     durationMs: integer('duration_ms'),
     matchMbRecordingId: text('match_mb_recording_id'),
     matchTitle: text('match_title'),

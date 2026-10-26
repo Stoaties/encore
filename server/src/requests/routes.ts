@@ -14,9 +14,12 @@ import {
   refetchRequest,
   deleteRequest,
   listRequests,
+  youtubeCandidates,
+  pickYoutubeVideo,
   RequestError,
   type RequestCtx,
 } from './service.js';
+import type { YoutubeCandidate } from '../youtube/client.js';
 
 const CreateBody = z.object({
   type: z.enum(['track', 'album', 'artist']),
@@ -86,6 +89,19 @@ export function requestRoutes(deps: AppDeps) {
     app.post('/:id/youtube', { preHandler: app.authenticate }, async (req): Promise<MusicRequest> => {
       const { id } = IdParam.parse(req.params);
       return retryOnYoutube(ctx, await requireUser(req.user.sub), id);
+    });
+
+    // Top-10 YouTube search results so the user can pick the exact video.
+    app.get('/:id/youtube-candidates', { preHandler: app.authenticate }, async (req): Promise<YoutubeCandidate[]> => {
+      const { id } = IdParam.parse(req.params);
+      const { q } = z.object({ q: z.string().optional() }).parse(req.query);
+      return youtubeCandidates(ctx, await requireUser(req.user.sub), id, q);
+    });
+
+    app.post('/:id/youtube-pick', { preHandler: app.authenticate }, async (req): Promise<MusicRequest> => {
+      const { id } = IdParam.parse(req.params);
+      const { videoId } = z.object({ videoId: z.string().min(1) }).parse(req.body);
+      return pickYoutubeVideo(ctx, await requireUser(req.user.sub), id, videoId);
     });
 
     app.delete('/:id', { preHandler: app.authenticate }, async (req, reply) => {

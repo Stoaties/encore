@@ -25,7 +25,7 @@ import {
 } from './scoring.js';
 import { albumDirParts, sanitizePathPart, trackFileName } from './naming.js';
 import { fetchCover, verifyAudio, writeTags, AudioVerifyError } from './tagging.js';
-import { downloadTopMatch, YoutubeNotFoundError } from '../youtube/client.js';
+import { downloadTopMatch, downloadVideo, YoutubeNotFoundError, type YoutubeSearchResult } from '../youtube/client.js';
 
 /** Unrecoverable for this request — do not retry the job. */
 export class PermanentError extends Error {}
@@ -51,7 +51,8 @@ type Target =
       releaseTitle?: string | null;
       releaseGroupMbid?: string | null;
       artistMbid?: string | null;
-      recordingMbid: string;
+      /** Optional: absent for direct YouTube downloads with no MusicBrainz match. */
+      recordingMbid?: string | null;
     };
 
 export interface WorkerDeps {
@@ -707,36 +708,57 @@ export class AcquisitionWorker {
     if (!config.jellyfinApiKey) throw new PermanentError('JELLYFIN_API_KEY must be configured for acquisition');
 
     const req = await this.getRequest(requestId);
-    if (req.type !== 'track') throw new PermanentError('YouTube fallback is only available for track requests');
+    if (req.type !== 'track') throw new PermanentError('YouTube acquisition is only available for track requests');
     if (['pending', 'denied', 'available'].includes(req.status)) {
       await jlog('info', `Request is ${req.status} — nothing to do`);
       return;
     }
-    if (!req.mbRecordingId) throw new PermanentError('track request has no recording MBID');
 
+    const ytMeta = (req.meta ?? {}) as { videoId?: string; ytTitle?: string; ytArtist?: string };
     await this.setRequest(req.id, { status: 'searching', progress: null, errorMessage: null });
-    const rec = await mb.lookupRecording(req.mbRecordingId);
-    const target: Target = {
-      kind: 'track',
-      title: rec.title,
-      artistName: rec.artistName,
-      durationMs: rec.durationMs,
-      releaseTitle: rec.releaseTitle,
-      releaseGroupMbid: rec.releaseGroupMbid,
-      artistMbid: rec.artistMbid,
-      recordingMbid: rec.mbid,
-    };
-    await jlog('info', `Fetching “${target.title}” by ${target.artistName} from YouTube`);
+
+    // Tags come from MusicBrainz when the import matched a recording, otherwise
+    // from the video's own title/artist. No MB match is required.
+    let target: Extract<Target, { kind: 'track' }>;
+    if (req.mbRecordingId) {
+      const rec = await mb.lookupRecording(req.mbRecordingId);
+      target = {
+        kind: 'track',
+        title: rec.title,
+        artistName: rec.artistName,
+        durationMs: rec.durationMs,
+        releaseTitle: rec.releaseTitle,
+        releaseGroupMbid: rec.releaseGroupMbid,
+        artistMbid: rec.artistMbid,
+        recordingMbid: rec.mbid,
+      };
+    } else {
+      target = {
+        kind: 'track',
+        title: ytMeta.ytTitle ?? req.trackTitle ?? 'Unknown',
+        artistName: ytMeta.ytArtist ?? req.artistName ?? 'Unknown Artist',
+        durationMs: null,
+        releaseTitle: null,
+        releaseGroupMbid: null,
+        artistMbid: null,
+        recordingMbid: null,
+      };
+    }
 
     const staging = path.join(config.stagingPath, `${req.id}-yt`);
     await fs.mkdir(staging, { recursive: true });
     try {
       await this.setRequest(req.id, { status: 'downloading', progress: null });
-      const query = `${target.artistName} ${target.title}`;
-      const result = await downloadTopMatch(query, {
-        stagingDir: staging,
-        log: (m) => void jlog('info', m),
-      });
+      // Download the EXACT video when we have its id (playlist import / manual
+      // pick); otherwise fall back to searching YouTube for the track name.
+      let result: YoutubeSearchResult;
+      if (ytMeta.videoId) {
+        await jlog('info', `Downloading YouTube video ${ytMeta.videoId} for “${target.title}” by ${target.artistName}`);
+        result = await downloadVideo(ytMeta.videoId, { stagingDir: staging, log: (m) => void jlog('info', m) });
+      } else {
+        await jlog('info', `Fetching “${target.title}” by ${target.artistName} from YouTube`);
+        result = await downloadTopMatch(`${target.artistName} ${target.title}`, { stagingDir: staging, log: (m) => void jlog('info', m) });
+      }
       await jlog(
         'info',
         `Downloaded YouTube video ${result.videoId} — “${result.videoTitle}”${result.durationSec ? ` (${Math.round(result.durationSec)}s)` : ''}`,
